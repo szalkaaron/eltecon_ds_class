@@ -1,0 +1,444 @@
+---
+title: "Félév végi beadandó"
+author: "Szalka Áron"
+date: '2020 01 05 '
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Félév végi beadandó
+# készítette: Szalka Áron
+
+
+
+A félév végi beadandómban a Magyarországi moziforgalom 2014-es adatait elemzem R segítségével. Ehhez a Nemzeti Filmiroda honalpjáról töltöttem le a "2014-ben vetített (premier és nem premier) filmek összesített forgalmi adatai" című excell táblát. Innen lehet letölteni: http://nmhh.hu/nemzeti-filmiroda/mozgokep-statisztika.
+
+```{r message=FALSE}
+library(ggplot2)
+library(data.table)
+library(readxl)
+library(car)
+library(magrittr)
+library(dplyr)
+setwd("G:/Egyetem/R/Beadando")
+data <- read_excel("filmek 2014.xlsx", 
+                               col_types = c("text", "text", "text", 
+                                                   "date", "numeric", "numeric", "numeric", 
+                                                   "numeric", "numeric", "numeric", 
+                                                   "numeric", "numeric", "text", "numeric", 
+                                                   "numeric", "text"), n_max = 555)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+# Adat tisztítgatás, rendezés, új oszlopok
+
+Kezdetben szükség vot az adatok letisztítására, illetve néhány új oszlop bevezetésére. Az átláthatóság kedvéért a több országhoz tartozó filmek esetében az elsőnek beírtat vettem alapul, mert a sorrendjük nem mindig volt azonos, amiből valószíűsíthető, hogy az első a legfontosabb, de erre vonatkozó információt nem találtam. A filmek lehetséges származási országáit 4 csoportba osztottam : USA, Magyarország, Európa (Magyarország nélkül) és a maradék országok csoportjára.
+Minden filhez kiszámoltam továbbá az átlagos jegy árát, illetve hogy volt-e 3D formátumban vetítve.
+Néhány egyértelműen hibás adatot felülírtam az értelemszerűség szerint.
+
+```{r }
+#adatok tisztítása
+data$`Bemutató időpontja` <- as.Date(data$`Bemutató időpontja`)
+data$Gyartoorszagrovid <- stringr::str_extract(data$`Gyártó ország (ISO-kóddal)`, "^.{2}")
+data$Gyartoorszagrovid <- as.factor(data$Gyartoorszagrovid)
+
+
+#átlagos jegyár kiszámítása 
+data$atlagosjegyar <- data$`Pénztári jegybev.(Ft) (bruttó)`/data$`Látogatók száma (fő)`
+
+#országcsoportok különválasztása
+data$Orszagcsoport <- data$Gyartoorszagrovid
+data$Orszagcsoport <- "Egyéb"
+data$Orszagcsoport[data$Gyartoorszagrovid == "US"] <- "USA"
+data$Orszagcsoport[data$Gyartoorszagrovid == "HU"] <- "Magyarország"
+data$Orszagcsoport[data$Gyartoorszagrovid %in% c("FR", "IT", "CZ", "ES", "PL", "BA", "GB", "BE", "DE", "PT", "NO", "RO", "RU", "CH", "SE", "DK", "LT", "FI", "EE", "AU", "IS", "NL", "IE")] <- "Európa"
+data$Orszagcsoport <- as.factor(data$Orszagcsoport)
+
+#egyéb kis adathibák kijavítása
+data$`Forgalmazó` <- as.factor(data$`Forgalmazó`)
+data$`Forgalmazó`[data$`Forgalmazó` == "Cirko Film Kft."] <- "Cirkofilm  Kft."
+data$`Forgalmazó`[data$`Forgalmazó` == "Forum Hungary FilmforgalmazóKft."] <- "Forum Hungary Filmforgalmazó Kft."
+data$`Induló összes digitális kópiaszám`[data$`Film címe` == "Lego kaland, A"] <- 58
+data$`Induló összes kópiaszám`[data$`Film címe` == "Lego kaland, A"] <- 58
+
+#van-e 3D-s verzió
+data$`3D-s verzió előadásszám (IMAX-el)`[is.na(data$`3D-s verzió előadásszám (IMAX-el)`)] <- 0
+data$vane3d <- data$`3D-s verzió előadásszám (IMAX-el)` > 0
+```
+
+
+
+
+
+
+
+
+
+
+# Különböző szűrések
+
+Második lépésként az adataimat különböző képpen megszűrtem, de a továbbiakban is használtam a teljes adatot is. A szűrés több részből állt: a legnézettebb 250 és a legnézettebb 40 film kiszűrésével kezdődött. Az 555 filmből álló adat közül a legnézettebb 250 re azért volt szükség, mert a maradék nagyon alacsony nézőszámmalrendelkezik csak, ami az 1000-et sem haladja meg, és bizonyos számolásoknál torzíthatsák a mintát.
+Ezen kívül kiszűrtem a legkisebb forgalmazókat is, amely filmforgalmazók maximum 3 filmet forgalmaztak egy éven, mert a későbbiekben a filmforgalmazók össszehasonlítása során torzíthatják az eredményeket.
+Végül a 2014 előtt bemutatott, de 2014-ben is játszott filmeket is kiszűrtem, mert az ő esetükben különesen torz lehet pl a nézőszám vagy az előadásszám a többihez képest.
+
+
+```{r }
+#itt kezdődik a szűrés
+
+
+#csak a lényeges filmek, a mikrovetítések kiszűrése
+topfilms <- data[with(data,order(-data$`Látogatók száma (fő)`)),][1:250,]
+top40 <- topfilms[with(topfilms,order(-topfilms$`Látogatók száma (fő)`)),][1:40,]
+
+#az olyan filmek kiszűrése, amelyeknek a forgalmazója jelentéktelen
+ritka_forgalmazok <- names(table(topfilms$`Forgalmazó`))[table(topfilms$`Forgalmazó`) < 4]
+topforgalmazok <- subset(topfilms,!topfilms$`Forgalmazó` %in% ritka_forgalmazok)
+
+#a 2014 előtti filmek kiszűrése
+top14 <- subset(topforgalmazok, !topforgalmazok$`Bemutató időpontja` < as.Date("2014-01-01"))
+```
+
+
+
+
+
+# Saját theme beállítása
+
+```{r }
+# saját theme beállítása hogy az ábrák jól nézzenek ki
+mytheme <- function (base_size = 11, base_family = "", base_line_size = base_size/22, 
+                     base_rect_size = base_size/22) 
+{
+  theme_bw(base_size = base_size, base_family = base_family, 
+           base_line_size = base_line_size, base_rect_size = base_rect_size) %+replace% 
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(), axis.line = element_line(colour = "black", 
+                                                                       size = rel(1)), legend.key = element_blank(), 
+          strip.background = element_rect(fill = "white", 
+                                          colour = "black", size = rel(2)), complete = TRUE,
+          plot.title = element_text(hjust = 0.5, size = 14))
+}
+```
+
+
+
+
+
+
+
+# Mikori filmeket játszottak?
+
+Az első kérdés, amit megnéztem, az volt, hogy mikori filmeket vetítettek 2014-ben. Az ábrákon jól látszik, hogy szinte csak 2010 óta megjelent filmeket vetítettek a magyar mozik, azon belül viszont egyészen 2010-ig egészen sűrűnek mondható az eloszlásuk. Ennél is szembetűnőbb, hogy azok a filmek, amiket a mozik sokszor vetítettek gyakorlatilag kivétel nélkül 2014-ben vagy 2013 legvégén megjelent filmek, és ez nem meglepő mert a mozik szinte mindig frss filmeket játszanak.
+
+```{r }
+#itt kezdődnek az ábrák
+
+#Mikori filmeket vetítettek a mozik? Ország szerint
+
+ggplot(data, aes(x = data$`Bemutató időpontja`, y = data$`Előadás-szám`)) + 
+                    geom_point(alpha = 0.4) + 
+                    geom_vline(xintercept = as.Date("2014-01-01"),color = "red") + 
+                    annotate("text", x = as.Date("2014-01-01"), y = 10000, label= "2014", color = "red", size = 7) +
+                    ggtitle(label = "Mikori filmeket vetítettek a magyar mozik 2014-ben?",) +
+                    xlab(label = "A film bemutatójának időpontja") +
+                    ylab(label = "Előadásszám") +
+                    mytheme()
+
+ggplot(data, aes(x = data$`Bemutató időpontja`, y = data$`Előadás-szám`)) + 
+                    geom_point(alpha = 0.6) + 
+                    geom_vline(xintercept = as.Date("2014-01-01"),color = "red") + 
+                    scale_x_date(limits = c(as.Date("2013-09-01"), as.Date("2014-12-31"))) +
+                    annotate("text", x = as.Date("2014-01-01"), y = 10000, label= "2014", color = "red", size = 7) +
+                    ggtitle(label = "Mikori filmeket vetítettek a magyar mozik 2014-ben?",) +
+                    xlab(label = "A film bemutatójának időpontja") +
+                    ylab(label = "Előadásszám") +
+                    mytheme()
+
+
+```
+
+
+# Mennyivel volt drágább a 3D?
+
+```{r }
+ggplot(data, aes(x = data$vane3d, y = data$atlagosjegyar)) + 
+  stat_summary(fun.y = mean, geom ="bar", color = "blue", fill = "blue") +
+  ggtitle(label = "Hagyományos éa 3D-s filmek átlagos jegyára",) +
+  xlab(label = "Filmtípus") +
+  ylab(label = "Átlagos jegyár") +
+  mytheme() + 
+  theme(axis.text.x = element_blank())  
+```
+
+# Amerikai dominancia
+
+Az előzőnél talán kevésbe egyértelmű kérdés, hogy a honnan származnak a magyar mozikban játszott filmek. Az önmagában nem meglepő, hogy az Egyesült Államokból érdező filmek elég dominánsak a magyar piacon is, de ehhez képest is kimagasló az arányuk. Az első ábrán a 2014-ben legnépszerűbb 40 film látható a nézők száma alapján. Ebből kiderül, hogy a Magyarországon 2014-ben legnézettebb 40 filmbe mindössze 2 db nem az USÁ-ból származó film került be, azok is csak a 30. hely környékére. Ha a nézőszámot az összes film országcsoportjai szerint bontjuk fel, a második ábrát kapjuk, ahol szintén szembetűnő, hogy szinte minden eladott mozijegyet amerikai filmre váltottak meg. Ez látható a harmadik ábrán is, csak egy kördiagramon. Pedig választék lett volna más filmekre is, legalábbis Budapesten: a negyedik ábrán látható, hogy a bemutatott filmeknek a fele sem volt egyébként amerikai.
+
+
+```{r }
+#Nagyon súlyos ábrák az amerikai dominanciáról
+ggplot(top40, aes(x = reorder(top40$`Film címe`, -top40$`Látogatók száma (fő)`), y = top40$`Látogatók száma (fő)`,
+                  col = top40$Orszagcsoport, fill = top40$Orszagcsoport)) +
+                         geom_bar(stat = "identity") +
+                         ggtitle(label = "A 40 legtöbb nézőt vonzzó film a magyar mozikban \n országcsoportok szerint",) +
+                         xlab(label = "A filmek") +
+                         ylab(label = "Látogatók száma (fő)") +
+                         mytheme() +
+                         theme(legend.title = element_blank(),
+                               axis.text.x = element_blank())
+
+ggplot(data, aes(x = data$Orszagcsoport, y = data$`Látogatók száma (fő)`)) +
+                         geom_bar(stat = "identity", fill = "blue") +
+                         scale_x_discrete(limits = c("USA", "Európa", "Magyarország", "Egyéb")) +
+                         ggtitle("A 2014-es Magyarországi mozinézők eloszlása \n a filmek származási helye alapján") +
+                         xlab("A filmek származási helye") +
+                         ylab("Látogatók száma (fő)") +
+                         mytheme()
+
+ggplot(data, aes(x = 1, y = data$`Látogatók száma (fő)`, fill = data$Orszagcsoport)) + 
+                        geom_bar(stat = "identity") +
+                        coord_polar(theta = "y") +
+                        ggtitle(label = "Az országcsoportok aránya \n a nézőszámokon belül",) +
+                        xlab(label = "A film bemutatójának időpontja") +
+                        ylab(label = "Előadásszám") +
+                        mytheme() +
+                        theme(legend.title = element_blank(),
+                              axis.title = element_blank(),
+                              axis.line = element_blank(), 
+                              axis.text = element_blank(), 
+                              axis.ticks = element_blank())
+
+ggplot(data, aes(x = 1, fill = data$Orszagcsoport)) + 
+                        geom_bar() +
+                        coord_polar(theta = "y") +
+                        ggtitle(label = "Az országcsoportok aránya \n az összes bemutatott film számán belül") +
+                        mytheme() +
+                        theme(legend.title = element_blank(),
+                              axis.title = element_blank(),
+                              axis.line = element_blank(), 
+                              axis.text.y = element_blank(), 
+                              axis.ticks = element_blank())
+
+
+
+```
+
+## Melyik forgalmazó becsül a legpontosabban?
+
+A dolgozatom fő kérdése az, hogy melyik magyarországi filmforgalmazó becsli a legpontosabban a a filmjei iránti érdeklődést. Ezt két dologból lehet megállapítani. Még mielőtt a film kijönne a mozikba, a forgalmazó kópiákat készít róla, amelyeket majd a mozik vetíteni tudnak. Ezek számáról tartalmaz is adatot a táblázatom. Majd ehhez képest lesz valamekkora érdeklődés a film iránt, aminek a legjobb mérője a vetítések száma, hiszen amíg van érdeklődés rá, a filmeket műsorra tűzik.
+Azonban nem elég megnézni a kópiszám/vetítésszám arányt, mert az torzíthat a filmek mérete szerint. Hiszen egy plázában vagy egy vidéki városban nem kell több kópia, ha egy kicsit nagyobb az érdeklődés, csak a meglévőt többször játsszák. Az érdeklődés csökkenésével is nem lehet lefaragni a kópiaszámból egy idő után, egy darab minimum kell ha egyáltalán játszani szeretnék.
+
+Mindezekből kifolyólag nem alkalmas egy sima lineáris modellt alkamazni, amihez a különböző forgalmazók becslési teljesítményét lehet mérni. E helyett egy olyan vonalra van szükség, ami a lehető legjobban kifejezni, hogy hány kópiához mennyi az elvárható előadászsám.
+
+Ezt az órán tanult Empirical loss minimaliser módszerével vizsgáltam meg.
+
+Azonban fontos előre jelezni, hogy az eredmény egyajta piaci átlagot hoz majd, ki és ehhez képest lehet csak kijelenteni, hogy valami alul- vagy felül lett becsülve. A piaci átlagot ráadásul maguk a forgalmazók is befolyásolják, ami felveti az endogenitás problémáját.
+
+Az adatot 2 véletlenszerű csoportra bontottam, train és test csoportokra. A train csoport segíségével egy polinomiális becslést végeztem  el, így kijött egy vonal, ami jó közelítése a kópiaszám-előadásszám összefüggésének. Ezt követően a test csoporttal összevetettem ezt, és kiszámoltam az MSE értékét. Megtettem ezt 1 és 12 között minden lehetséges polinpmfokra, hogy megtaláljam, hanyad fokú polinom becsli a legpontosabban a test adataimat. 
+
+```{r }
+#Az adat elosztása trainra és testre, majd kirajzolás
+
+mintanagysag <- floor(0.75 * nrow(top14))
+set.seed(511)
+train_ind <- sample(seq_len(nrow(top14)), size = mintanagysag)
+train <- top14[train_ind, ]
+test <- top14[-train_ind, ]
+
+ggplot(train, aes(x = train$`Induló összes kópiaszám`, y = train$`Előadás-szám`)) + 
+  geom_point() +
+  geom_point(data = test, aes(x = test$`Induló összes kópiaszám`, y = test$`Előadás-szám`), color = "red") +
+  ggtitle(label = "A train és a test data a kópiaszám-előadásszám ábrán",) +
+  xlab(label = "Induló kópiaszám") +
+  ylab(label = "Előadásszám") +
+  mytheme()
+
+```
+
+```{r }
+#for ciklus a legjobb polinom kiválasztására
+
+msetabla <- list()
+
+for (i in 1:12) {
+  
+x <- train$`Induló összes kópiaszám`
+y <- train$`Előadás-szám`
+fit <- lm(y~poly(x, i, raw = T))
+b<-coef(fit)
+xfit <- seq(min(x), max(x))
+yfit <- b[1] + poly(xfit,i,raw=T) %*% b[-1]
+vonal <- data.frame(xfit, yfit)
+
+bu <- vonal$xfit[1]-1
+testxmodositott <- test$`Induló összes kópiaszám`-bu
+mse <- mean((test$`Előadás-szám` - vonal$yfit[testxmodositott])^2)
+msetabla[[i]] <- mse 
+}
+
+msetabla <- do.call(rbind, msetabla)
+minpolyseged <- min(msetabla)
+minpoly <- which(apply(msetabla, 1, function(r) any(r == c(minpolyseged))))
+minpoly
+```
+
+
+
+
+
+Miután kijött, hogy hányad fokú polinom becsli a legjobban a tesztadatot, ezt a polinomot használva szeretnék képet kapni arról, hogy a különböző forgalmazók hogyan teljesítenek. Első lépésként fixáltam a polinomot és kirajzoltam.
+
+
+```{r }
+# legjobb polinom használata és kirajzolása
+
+x <- train$`Induló összes kópiaszám`
+y <- train$`Előadás-szám`
+fit <- lm(y~poly(x, minpoly, raw = T))
+b<-coef(fit)
+xfit <- seq(min(x), max(x))
+yfit <- b[1] + poly(xfit,minpoly,raw=T) %*% b[-1]
+vonal <- data.frame(xfit, yfit)
+
+ggplot(train, aes(x = train$`Induló összes kópiaszám`, y = train$`Előadás-szám`)) + 
+  geom_point() +
+  geom_line(data = vonal, aes(x = xfit, y = yfit)) +
+  geom_point(data = test, aes(x = test$`Induló összes kópiaszám`, y = test$`Előadás-szám`), color = "red") +
+  ggtitle(label = "A train és a test data a kópiaszám-előadásszám ábrán \n a legjobb polinomiális becsléssel",) +
+  xlab(label = "Induló kópiaszám") +
+  ylab(label = "Előadásszám") +
+  mytheme()
+
+```
+
+
+
+
+
+
+Ezt követően kiszámoltam a különböző filmekre, hogy a polinomiális modell alapján hány vetítést várt a forgalmazó, illetve ezt összehasonlítottam azza, hogy mennyi lett végül. Az ábrákon azt látható, hogy az eredetileg várhoz képest milyen aránnyal lett több vagy kevesebb néző.
+
+```{r }
+#először top14-nek egy új oszlop, hogy mennyinek kéne lennie az előadászámnak a vonal alapján
+kellettvolna <- function(kl) {
+  kl2 <- kl-bu
+  kl3 <- vonal$yfit[kl2]
+  return(kl3)
+}
+
+top142 <- top14
+top142$eloadaskellettvolna <- kellettvolna(top142$`Induló összes kópiaszám`)
+top142$kulonbseg <- ((top142$`Előadás-szám` - top142$eloadaskellettvolna)/top142$eloadaskellettvolna)
+
+#plotok jönnek
+ggplot(top142, aes(x = top142$`Film címe`, y = top142$kulonbseg, col = `Forgalmazó`)) + 
+  geom_point() +
+  geom_hline(yintercept = 0, alpha = 0.8) +
+  ggtitle(label = "A különböző filmek népszerűségének felül/alul becslése \n a piaci átlaghoz képest",) +
+  xlab(label = "Filmek") +
+  ylab(label = "A filmek vetítésszáma a várthoz képest") +
+  mytheme() +
+  theme(axis.text.x = element_blank()) 
+ 
+
+ggplot(top142, aes(x = top142$`Forgalmazó`, y = top142$kulonbseg)) + 
+  geom_jitter(width = 0.2, color = "blue") + 
+  geom_hline(yintercept = 0, alpha = 0.8) +
+  ggtitle(label = "A különböző filmek népszerűségének felül/alul becslése \n a piaci átlaghoz képest a forgalmazók szerint",) +
+  xlab(label = "Filmek") +
+  ylab(label = "A filmek vetítésszáma a várthoz képest") +
+  mytheme()+
+  theme(axis.text.x = element_blank())
+```
+
+
+
+
+
+
+
+Végül a forgalmazók szerint bontottam az adatokat és kiszámoltam minden forgalmazó esetében a tévedés átlagát, és a standard hibákat. Ezeket az ábrákon lehet látni.
+
+```{r }
+
+sdsum <- top142 %>%
+    group_by(`Forgalmazó`) %>%
+    summarise(mean_becsles = mean(kulonbseg),
+              sd_becsles = sd(kulonbseg),
+              darab_becsles = n(),
+              SE_becsles = sd(kulonbseg)/sqrt(n()))
+
+sdsum$min <- (sdsum$mean_becsles - sdsum$sd_becsles)
+sdsum$max <- (sdsum$mean_becsles + sdsum$sd_becsles)
+
+ggplot(sdsum, aes(x = sdsum$`Forgalmazó`, y = sdsum$mean_becsles)) + 
+     geom_bar(stat = "identity", color = "blue", fill = "blue") + 
+     ggtitle(label = "A filmforgalmazók átlagos alul/felülbecslései",) +
+     xlab(label = "Forgalmazók") +
+     ylab(label = "A filmek vetítésszáma a várthoz képest \n forgalmazók szerinti átlag") +
+     mytheme() +
+     theme(axis.text.x = element_text(angle = 90))
+
+ggplot(sdsum, aes(x = sdsum$`Forgalmazó`, y = sdsum$mean_becsles)) + 
+     geom_point(size = 2.5, color = "red") +
+     geom_linerange(ymin = sdsum$min, ymax = sdsum$max, size = 2.5, alpha = 0.4, color = "blue") +
+     scale_y_continuous(limits = c(-1, 1)) +
+     ggtitle(label = "A filmforgalmazók átlagos alul/felülbecslései, és standard hibájuk",) +
+     xlab(label = "Forgalmazók") +
+     ylab(label = "A filmek vetítésszáma a várthoz képest \n forgalmazók szerinti átlag, és standard hibájuk") +
+     mytheme() + 
+     theme(axis.text.x = element_text(angle = 90))
+
+
+
+
+```
+
+
+Összsségében megállapítható, hogy talán a kevés adat miatt, mindenesetre a forgalmazók mind viszonylag széles spektumon mozogtak becslési hibáikat tekintve. A legpontosabb a Frrmen Entratainment Kft volt közülük. A leginkább hajlamos túlbecsülni a vetítéseket a MOzinet Kft volt, az alulbecslésre a leghajlamosabb pedig a Forum hungary Kft.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
